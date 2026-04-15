@@ -3,6 +3,7 @@
 
 ## 📊 What This Analysis Does
 This repository walks through a complete NMDS ordination workflow:
+
 1. Data Preparation
 
   Join benthic count data with sample metadata
@@ -33,7 +34,6 @@ This repository walks through a complete NMDS ordination workflow:
     Install required R packages:
       rinstall.packages(c("dplyr", "tidyr", "ggplot2", "vegan", "ggrepel", "indicspecies"))
   Running the Analysis
-
     Clone or download this repository
     Open Code/NMDS_Macroinvertebrate_Analysis.Rmd in RStudio
     Confirm data files are in the Data/Raw/ folder
@@ -66,7 +66,7 @@ Expected Runtime
 This repository includes three comprehensive instruction documents in the InstructionDocuments/ folder:
 
 ### 1. Instructions-NMDSAnalysis.docx
-
+ 
   What NMDS is and when to use it
   Step-by-step walkthrough of every code section
   How to choose between parametric and non-parametric ordination
@@ -74,53 +74,46 @@ This repository includes three comprehensive instruction documents in the Instru
 
 2. QuickReferenceGuide-NMDS.docx
   For quick lookups:
-
-    Copy-paste ready code blocks
-    Stress value interpretation table
-    PERMANOVA and BETADISPER interpretation guide
-    Troubleshooting checklist
-    Citation templates
+   - Copy-paste ready code blocks
+   - Stress value interpretation table
+   - PERMANOVA and BETADISPER interpretation guide
+   - Troubleshooting checklist
+   - Citation templates
 
 3. NMDSResultsInterpretation.docx
   Learn how to interpret and report your results:
-
-    What NMDS axes represent
-    How to read ellipses and centroids
-    How to interpret PERMANOVA R² and p-values
-    How to report BETADISPER results alongside PERMANOVA
-    Example results write-up for a publication
+   - What NMDS axes represent
+   - How to read ellipses and centroids
+   - How to interpret PERMANOVA R² and p-values
+   - How to report BETADISPER results alongside PERMANOVA
+   - Example results write-up for a publication
 
 ## 🔬 Methods Background
 
 The Dataset
   This analysis uses the same benthic macroinvertebrate dataset as the Diversity Analysis module. The data includes:
-
-    88 unique sampling stations
-    141 unique samples (BenSampID)
-    182 taxa (primarily family-level identifications)
-    Two gradient types: Riffle and Boatable
-    Two seasons: Spring and Fall
+   - 88 unique sampling stations
+   - 141 unique samples (BenSampID)
+   - 182 taxa (primarily family-level identifications)
+   - Two gradient types: Riffle and Boatable
+   - Two seasons: Spring and Fall
 
 Why NMDS?
   NMDS (Nonmetric Multidimensional Scaling) is the most widely used ordination method in stream ecology because:
-
-    It makes no assumptions about multivariate normality
-    It works with Bray-Curtis dissimilarity, which is ideal for community data
-    It handles the many zeros typical in species matrices
-    Stress values provide a transparent measure of how well the 2D plot represents the data
+   - It makes no assumptions about multivariate normality
+   - It works with Bray-Curtis dissimilarity, which is ideal for community data
+   - It handles the many zeros typical in species matrices
+   - Stress values provide a transparent measure of how well the 2D plot represents the data
 
 Why Bray-Curtis?
   Bray-Curtis dissimilarity is standard for abundance-based community data:
-
-    Ranges from 0 (identical communities) to 1 (no shared taxa)
-    Ignores joint absences (two sites lacking the same taxon are not made more similar)
-    Sensitive to dominant taxa when combined with abundance data
+   - Ignores joint absences (two sites lacking the same taxon are not made more similar)
+   - Sensitive to dominant taxa when combined with abundance data
 
 Why log(x+1) + Wisconsin standardization?
   Raw abundance data are right-skewed and often dominated by a few taxa (e.g., Chironomidae). Two sequential transformations correct this:
-
-    log(x+1): Compresses the range of dominant taxa while preserving zeros
-    Wisconsin double standardization: Scales by species maximum then by site total, giving rare taxa more balanced weight
+   - log(x+1): Compresses the range of dominant taxa while preserving zeros
+   - Wisconsin double standardization: Scales by species maximum then by site total, giving rare taxa more balanced weight
 
 ## 🎯 Learning Objectives
 After completing this module, you will be able to:
@@ -164,11 +157,10 @@ If you use this code in your research, please cite:
   Methods in Stream Ecology Textbook:
   [Citation to be added]
   Key methods references:
-
-    McCune, B., & Grace, J. B. (2002). Analysis of Ecological Communities. MjM Software.
-    Bray, J. R., & Curtis, J. T. (1957). An ordination of the upland forest communities of southern Wisconsin. Ecological Monographs, 27(4),         325–349.
-    Oksanen, J., et al. (2022). vegan: Community Ecology Package. https://CRAN.R-project.org/package=vegan
-    De Caceres, M., & Legendre, P. (2009). Associations between species and groups of sites. Ecology, 90(12), 3566–3574.
+   - McCune, B., & Grace, J. B. (2002). Analysis of Ecological Communities. MjM Software.
+   - Bray, J. R., & Curtis, J. T. (1957). An ordination of the upland forest communities of southern Wisconsin. Ecological Monographs, 27(4),         325–349.
+   - Oksanen, J., et al. (2022). vegan: Community Ecology Package. https://CRAN.R-project.org/package=vegan
+   - De Caceres, M., & Legendre, P. (2009). Associations between species and groups of sites. Ecology, 90(12), 3566–3574.
 
 ## 🤝 Contributing
 This is an educational resource. If you find errors or have suggestions for improvement, please:
