@@ -1,0 +1,672 @@
+---
+title: "NMDS Ordination of Macroinvertebrate Community Composition"
+subtitle: "Bray-Curtis Dissimilarity | Abundance-Weighted | Gradient & Season Comparison"
+author: "Methods in Stream Ecology"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: show
+  pdf_document:
+    toc: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 9,
+  fig.height = 6,
+  dpi        = 300
+)
+```
+
+------------------------------------------------------------------------
+
+## Overview
+
+This tutorial walks through a **Nonmetric Multidimensional Scaling (NMDS)** ordination of macroinvertebrate abundance data to compare community composition across stream gradient types (Riffle vs. Boatable) and seasons (Spring vs. Fall).
+
+NMDS is a non-parametric ordination technique well-suited for ecological community data because:
+
+-   It ranks dissimilarities rather than assuming multivariate normality
+-   It works with any distance/dissimilarity metric (we use **Bray-Curtis** here)
+-   It is robust to the many zeros common in species-abundance matrices
+-   It provides a low-dimensional visual summary of community variation (McCune & Grace 2002)
+
+**Ecological question:** Does macroinvertebrate community composition differ between **stream gradient types** (Riffle vs. Boatable) and/or **seasons** (Spring vs. Fall)?
+
+------------------------------------------------------------------------
+
+## Data Structure
+
+This workflow uses three input files that must be in your `data/` folder:
+
+| File | Contents | Key columns |
+|----|----|----|
+| `stationBenthicsTESTSITE.csv` | Raw macroinvertebrate counts (long format) | `StationID`, `BenSampID`, `FinalID`, `Individuals` |
+| `stationInfoBenSampsTESTSITE.csv` | Sample metadata | `BenSampID`, `Gradient`, `Season` |
+| `masterTaxaGenus.csv` | Taxonomic reference and traits | `FinalID`, `Order`, `Family`, `FFG`, `TolVal` |
+
+These files are joined by `BenSampID` (unique sample identifier) and `FinalID` (taxon name).
+
+------------------------------------------------------------------------
+
+## Step 1: Load Required Packages
+
+```{r packages}
+# Install packages if needed (uncomment lines below)
+# install.packages(c("dplyr", "tidyr", "ggplot2", "vegan", "ggrepel", "indicspecies"))
+
+library(dplyr)        # data wrangling
+library(tidyr)        # pivoting to wide format
+library(ggplot2)      # visualization
+library(vegan)        # NMDS, PERMANOVA, Bray-Curtis (Oksanen et al. 2022)
+library(ggrepel)      # non-overlapping text labels
+library(indicspecies) # indicator species analysis (De Caceres & Legendre 2009)
+```
+
+**Key packages and citations:**
+
+| Package | Purpose | Citation |
+|----|----|----|
+| `vegan` | NMDS, PERMANOVA, Bray-Curtis dissimilarity | Oksanen et al. (2022) |
+| `indicspecies` | Indicator species analysis (IndVal) | De Caceres & Legendre (2009) |
+| `ggplot2` | Visualization | Wickham (2016) |
+
+------------------------------------------------------------------------
+
+## Step 2: Load Data
+
+```{r load-data}
+benthics <- read.csv("~/Dropbox/VT/MethodsChapter/NMDS/R Module for Github/Data/stationBenthicsTESTSITE.csv")
+
+site_info <- read.csv("~/Dropbox/VT/MethodsChapter/NMDS/R Module for Github/Data/stationInfoBenSampsTESTSITE.csv")
+
+master_taxa <- read.csv("~/Dropbox/VT/MethodsChapter/NMDS/R Module for Github/Data/masterTaxaGenus.csv")
+
+# Inspect structure
+glimpse(benthics)
+glimpse(site_info)
+```
+
+------------------------------------------------------------------------
+
+## Step 3: Join Metadata to Benthic Counts
+
+Each sample (`BenSampID`) needs its gradient type and season joined from the site info table. We also exclude samples collected outside the standard spring/fall sampling window.
+
+```{r join-metadata}
+# Select only the metadata columns we need
+meta_slim <- site_info %>%
+  select(StationID, BenSampID, RepNum, Gradient, Season) %>%
+  filter(Season %in% c("Spring", "Fall"))   # drop "Outside Sample Window"
+meta_slim
+
+# Join metadata to benthic counts
+benthics_meta <- benthics %>%
+  inner_join(meta_slim, by = c("StationID", "BenSampID", "RepNum"))
+
+# Check sample representation by gradient and season
+benthics_meta %>% count(Gradient, Season)
+```
+
+> **Note:** Samples labeled `"Outside Sample Window"` are excluded because they fall outside the standard spring/fall sampling periods. Adjust this filter if your question requires them.
+
+------------------------------------------------------------------------
+
+## Step 4: Filter and Clean Counts
+
+```{r filter-counts}
+benthics_clean <- benthics_meta %>%
+  filter(
+    Excluded.Taxa == 0,   # remove flagged/excluded taxa
+    Individuals   > 0,   # remove zero-count rows
+    !is.na(FinalID)       # remove unidentified rows
+  )
+
+cat("Samples retained:", n_distinct(benthics_clean$BenSampID), "\n")
+cat("Taxa retained:   ", n_distinct(benthics_clean$FinalID),   "\n")
+```
+
+------------------------------------------------------------------------
+
+## Step 5: Build the Community Matrix
+
+NMDS requires a **wide-format community matrix** where:
+
+-   **Rows** = sampling units (`BenSampID`)
+-   **Columns** = taxa (`FinalID`)
+-   **Values** = individual counts, with `0` for taxa absent from a sample
+
+```{r community-matrix}
+# Aggregate counts by sample x taxon (sums across reps if multiple exist)
+benthics_agg <- benthics_clean %>%
+  group_by(StationID, BenSampID, Gradient, Season, FinalID) %>%
+  summarise(Individuals = sum(Individuals, na.rm = TRUE), .groups = "drop")
+
+# Pivot to wide format — one row per BenSampID, one column per taxon
+comm_wide <- benthics_agg %>%
+  select(BenSampID, FinalID, Individuals) %>%
+  pivot_wider(
+    names_from  = FinalID,
+    values_from = Individuals,
+    values_fill = 0
+  )
+
+# Separate metadata from the community matrix
+meta <- benthics_agg %>%
+  select(BenSampID, StationID, Gradient, Season) %>%
+  distinct()
+
+# Align row order between meta and comm_wide
+meta <- meta[match(comm_wide$BenSampID, meta$BenSampID), ]
+
+comm_matrix <- comm_wide %>%
+  select(-BenSampID) %>%
+  as.matrix()
+
+rownames(comm_matrix) <- comm_wide$BenSampID
+
+# Verify dimensions
+cat("Samples (rows):", nrow(comm_matrix), "\n")
+cat("Taxa (columns):", ncol(comm_matrix), "\n")
+```
+
+------------------------------------------------------------------------
+
+## Step 6: Transform and Standardize Abundance Data
+
+Raw abundance data are right-skewed and dominated by a few highly abundant taxa (e.g., Chironomidae). Two sequential transformations address this before calculating dissimilarities:
+
+1.  **log(x + 1) transformation** — compresses the range of dominant taxa while preserving zeros
+2.  **Wisconsin double standardization** — divides by species maximum then by site total; standard practice for community NMDS (McCune & Grace 2002)
+
+```{r transform}
+# Step 6a: log(x + 1) transformation
+comm_log <- log1p(comm_matrix)
+
+# Step 6b: Wisconsin double standardization
+comm_scaled <- wisconsin(comm_log)
+
+cat("Transformation complete. Value range after scaling:\n")
+cat("  Min:", round(min(comm_scaled), 4), "\n")
+cat("  Max:", round(max(comm_scaled), 4), "\n")
+```
+
+> **Why these two steps?** The log transformation reduces the leverage of dominant taxa; Wisconsin standardization ensures that highly abundant families do not disproportionately drive the ordination geometry. Together they produce a more ecologically balanced distance matrix.
+
+------------------------------------------------------------------------
+
+## Step 7: Calculate Bray-Curtis Dissimilarity
+
+Bray-Curtis dissimilarity (Bray & Curtis 1957) is the standard metric for ecological community data. It ranges from 0 (identical communities) to 1 (no shared taxa) and ignores joint absences — two samples that both lack a taxon are not considered more similar because of it.
+
+```{r bray-curtis}
+bc_dist <- vegdist(comm_scaled, method = "bray")
+
+# Inspect the distribution of pairwise dissimilarities
+summary(as.vector(bc_dist))
+```
+
+------------------------------------------------------------------------
+
+## Step 8: Run the NMDS Ordination
+
+NMDS iteratively repositions samples in 2D space to best preserve the rank order of pairwise dissimilarities. **Stress** measures goodness of fit:
+
+| Stress    | Interpretation                   |
+|-----------|----------------------------------|
+| \< 0.05   | Excellent representation         |
+| 0.05–0.10 | Good                             |
+| 0.10–0.20 | Acceptable                       |
+| \> 0.20   | Poor — consider k = 3 dimensions |
+
+```{r nmds, results='hide'}
+set.seed(123)  # for reproducibility
+
+nmds <- metaMDS(
+  comm_scaled,
+  distance = "bray",
+  k        = 2,       # 2-dimensional solution
+  trymax   = 100,     # random starts to find stable solution
+  trace    = FALSE
+)
+```
+
+```{r nmds-stress}
+cat("NMDS stress:", round(nmds$stress, 4), "\n")
+
+# Shepard plot — visualizes how well 2D distances represent dissimilarities
+stressplot(nmds)
+```
+
+------------------------------------------------------------------------
+
+## Step 9: Extract NMDS Scores
+
+```{r extract-scores}
+# Extract site scores and join metadata
+nmds_scores <- as.data.frame(scores(nmds, display = "sites")) %>%
+  mutate(BenSampID = rownames(.)) %>%
+  left_join(meta, by = "BenSampID")
+
+# Centroids by gradient type
+centroids_gradient <- nmds_scores %>%
+  group_by(Gradient) %>%
+  summarise(NMDS1 = mean(NMDS1), NMDS2 = mean(NMDS2), .groups = "drop")
+
+# Centroids by season
+centroids_season <- nmds_scores %>%
+  group_by(Season) %>%
+  summarise(NMDS1 = mean(NMDS1), NMDS2 = mean(NMDS2), .groups = "drop")
+
+# Centroids by gradient x season combination
+nmds_scores <- nmds_scores %>%
+  mutate(GradSeason = paste(Gradient, Season, sep = "_"))
+
+centroids_combo <- nmds_scores %>%
+  group_by(GradSeason) %>%
+  summarise(NMDS1 = mean(NMDS1), NMDS2 = mean(NMDS2), .groups = "drop")
+
+head(nmds_scores)
+```
+
+------------------------------------------------------------------------
+
+## Step 10: Plot NMDS — Gradient Type
+
+```{r plot-gradient, fig.cap="NMDS ordination of macroinvertebrate community composition by stream gradient type. Points = individual samples (BenSampID); diamonds = group centroids; shaded ellipses = 95% confidence intervals. Bray-Curtis dissimilarity on log(x+1) Wisconsin-standardized abundance data."}
+
+gradient_colors <- c(
+  "Riffle"   = "#513dd1",
+  "Boatable" = "#E15759"
+)
+
+nmds_plot_gradient <- ggplot(nmds_scores,
+                             aes(x = NMDS1, y = NMDS2,
+                                 color = Gradient, fill = Gradient)) +
+  stat_ellipse(
+    aes(group = Gradient),
+    type = "t", level = 0.95,
+    geom = "polygon", alpha = 0.10, color = NA
+  ) +
+  stat_ellipse(
+    aes(group = Gradient),
+    type = "t", level = 0.95, linewidth = 0.6
+  ) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_point(
+    data        = centroids_gradient,
+    aes(x = NMDS1, y = NMDS2),
+    color       = gradient_colors[centroids_gradient$Gradient],
+    size = 8, shape = 18, show.legend = FALSE
+  ) +
+  ggrepel::geom_text_repel(
+    data          = centroids_gradient,
+    aes(x = NMDS1, y = NMDS2, label = Gradient),
+    color = "black", size = 4,
+    box.padding = 0.5, point.padding = 0.3,
+    segment.color = "grey50", segment.size = 0.3,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = gradient_colors) +
+  scale_fill_manual(values  = gradient_colors) +
+  labs(
+    title    = "NMDS of Macroinvertebrate Community Composition by Gradient",
+    subtitle = paste0("Bray-Curtis dissimilarity | Stress = ",
+                      round(nmds$stress, 3)),
+    x = "NMDS1", y = "NMDS2",
+    color = "Gradient", fill = "Gradient",
+    caption = "Points = samples; diamonds = centroids; ellipses = 95% CI"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position  = "right",
+    panel.grid.minor = element_blank(),
+    plot.title       = element_text(size = 13, face = "bold"),
+    plot.subtitle    = element_text(size = 10, color = "gray40"),
+    legend.text      = element_text(size = 12),
+    legend.title     = element_text(size = 14)
+  )
+
+nmds_plot_gradient
+```
+
+------------------------------------------------------------------------
+
+## Step 11: Plot NMDS — Season
+
+```{r plot-season, fig.cap="NMDS ordination colored by collection season (Spring vs. Fall)."}
+
+season_colors <- c(
+  "Spring" = "#59A14F",
+  "Fall"   = "#F28E2B"
+)
+
+nmds_plot_season <- ggplot(nmds_scores,
+                           aes(x = NMDS1, y = NMDS2,
+                               color = Season, fill = Season)) +
+  stat_ellipse(
+    aes(group = Season),
+    type = "t", level = 0.95,
+    geom = "polygon", alpha = 0.10, color = NA
+  ) +
+  stat_ellipse(
+    aes(group = Season),
+    type = "t", level = 0.95, linewidth = 0.6
+  ) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_point(
+    data        = centroids_season,
+    aes(x = NMDS1, y = NMDS2),
+    color       = season_colors[centroids_season$Season],
+    size = 8, shape = 18, show.legend = FALSE
+  ) +
+  ggrepel::geom_text_repel(
+    data          = centroids_season,
+    aes(x = NMDS1, y = NMDS2, label = Season),
+    color = "black", size = 4,
+    box.padding = 0.5, point.padding = 0.3,
+    segment.color = "grey50", segment.size = 0.3,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = season_colors) +
+  scale_fill_manual(values  = season_colors) +
+  labs(
+    title    = "NMDS of Macroinvertebrate Community Composition by Season",
+    subtitle = paste0("Bray-Curtis dissimilarity | Stress = ",
+                      round(nmds$stress, 3)),
+    x = "NMDS1", y = "NMDS2",
+    color = "Season", fill = "Season",
+    caption = "Points = samples; diamonds = centroids; ellipses = 95% CI"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position  = "right",
+    panel.grid.minor = element_blank(),
+    plot.title       = element_text(size = 13, face = "bold"),
+    plot.subtitle    = element_text(size = 10, color = "gray40"),
+    legend.text      = element_text(size = 12),
+    legend.title     = element_text(size = 14)
+  )
+
+nmds_plot_season
+```
+
+------------------------------------------------------------------------
+
+## Step 12: Plot NMDS — Gradient × Season
+
+```{r plot-combined, fig.cap="NMDS ordination showing the interaction of gradient type and season."}
+
+combo_colors <- c(
+  "Riffle_Spring"   = "#4E79A7",
+  "Riffle_Fall"     = "#76B7B2",
+  "Boatable_Spring" = "#E15759",
+  "Boatable_Fall"   = "#F28E2B"
+)
+
+nmds_plot_combo <- ggplot(nmds_scores,
+                          aes(x = NMDS1, y = NMDS2,
+                              color = GradSeason, fill = GradSeason)) +
+  stat_ellipse(
+    aes(group = GradSeason),
+    type = "t", level = 0.95,
+    geom = "polygon", alpha = 0.10, color = NA
+  ) +
+  stat_ellipse(
+    aes(group = GradSeason),
+    type = "t", level = 0.95, linewidth = 0.6
+  ) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_point(
+    data        = centroids_combo,
+    aes(x = NMDS1, y = NMDS2),
+    color       = combo_colors[centroids_combo$GradSeason],
+    size = 8, shape = 18, show.legend = FALSE
+  ) +
+  ggrepel::geom_text_repel(
+    data          = centroids_combo,
+    aes(x = NMDS1, y = NMDS2,
+        label = gsub("_", "\n", GradSeason)),
+    color = "black", size = 3.5,
+    box.padding = 0.5, point.padding = 0.3,
+    segment.color = "grey50", segment.size = 0.3,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = combo_colors,
+                     labels = gsub("_", " \u2013 ", names(combo_colors))) +
+  scale_fill_manual(values  = combo_colors,
+                    labels  = gsub("_", " \u2013 ", names(combo_colors))) +
+  labs(
+    title    = "NMDS by Gradient \u00d7 Season",
+    subtitle = paste0("Bray-Curtis dissimilarity | Stress = ",
+                      round(nmds$stress, 3)),
+    x = "NMDS1", y = "NMDS2",
+    color = "Group", fill = "Group",
+    caption = "Points = samples; diamonds = centroids; ellipses = 95% CI"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position  = "right",
+    panel.grid.minor = element_blank(),
+    plot.title       = element_text(size = 13, face = "bold"),
+    plot.subtitle    = element_text(size = 10, color = "gray40"),
+    legend.text      = element_text(size = 11),
+    legend.title     = element_text(size = 13)
+  )
+
+nmds_plot_combo
+```
+
+------------------------------------------------------------------------
+
+## Step 13: PERMANOVA — Do Groups Differ in Community Composition?
+
+PERMANOVA (`adonis2`) tests whether group centroids in multivariate space differ significantly. We run four models:
+
+```{r permanova}
+# Model 1: Gradient type
+perm_gradient <- adonis2(
+  bc_dist ~ Gradient,
+  data = meta, permutations = 999, method = "bray"
+)
+cat("=== PERMANOVA by Gradient ===\n")
+print(perm_gradient)
+
+# Model 2: Season
+perm_season <- adonis2(
+  bc_dist ~ Season,
+  data = meta, permutations = 999, method = "bray"
+)
+cat("\n=== PERMANOVA by Season ===\n")
+print(perm_season)
+
+# Model 3: Gradient + Season sequential
+perm_both <- adonis2(
+  bc_dist ~ Gradient + Season,
+  data = meta, permutations = 999, method = "bray"
+)
+cat("\n=== PERMANOVA: Gradient + Season (sequential) ===\n")
+print(perm_both)
+
+# Model 4: With interaction
+perm_interact <- adonis2(
+  bc_dist ~ Gradient + Season + Gradient * Season,
+  data = meta, permutations = 999, method = "bray"
+)
+cat("\n=== PERMANOVA: Gradient + Season + Interaction ===\n")
+print(perm_interact)
+```
+
+> **Interpreting PERMANOVA output:** The `R²` value tells you what proportion of total community variation is explained by the grouping factor. The `Pr(>F)` is the permutation-based p-value. A significant result means group centroids are farther apart than expected by chance — but see Step 14 to check whether this reflects true centroid differences or unequal dispersion.
+
+------------------------------------------------------------------------
+
+## Step 14: BETADISPER — Homogeneity of Multivariate Dispersion
+
+PERMANOVA assumes equal dispersion (variance) among groups. `betadisper` tests this assumption.
+
+```{r betadisper}
+# Dispersion by gradient
+disp_gradient      <- betadisper(bc_dist, meta$Gradient)
+disp_gradient_test <- permutest(disp_gradient, permutations = 999)
+cat("=== Dispersion test by Gradient ===\n")
+print(disp_gradient_test)
+
+# Dispersion by season
+disp_season      <- betadisper(bc_dist, meta$Season)
+disp_season_test <- permutest(disp_season, permutations = 999)
+cat("\n=== Dispersion test by Season ===\n")
+print(disp_season_test)
+```
+
+> **Interpreting betadisper:** A non-significant result (p \> 0.05) supports the PERMANOVA assumption and means that a significant PERMANOVA reflects centroid differences. A significant betadisper result means groups also differ in within-group variability — report and discuss both.
+
+------------------------------------------------------------------------
+
+## Step 15: Indicator Species Analysis
+
+Indicator species analysis (IndVal; Dufrêne & Legendre 1997) identifies taxa disproportionately associated with a particular gradient type. `multipatt` tests both specificity (taxon found mostly in one group) and fidelity (taxon found consistently within that group).
+
+```{r indval}
+indval_gradient <- multipatt(
+  comm_scaled,
+  meta$Gradient,
+  func    = "IndVal.g",
+  control = how(nperm = 999)
+)
+
+summary(indval_gradient, indvalcomp = TRUE)
+```
+
+------------------------------------------------------------------------
+
+## Step 16: Annotate Indicators with Taxonomic Traits
+
+The `masterTaxaGenus.csv` reference table lets you add functional feeding group (FFG) and tolerance values to indicator results — useful for ecological interpretation.
+
+```{r taxa-traits}
+indval_results <- indval_gradient$sign %>%
+  tibble::rownames_to_column("FinalID") %>%
+  filter(p.value < 0.05) %>%
+  mutate(indicates = ifelse(s.Riffle == 1, "Riffle", "Boatable")) %>%
+  left_join(
+    master_taxa %>% select(FinalID, Order, Family, FFG, TolVal),
+    by = "FinalID"
+  ) %>%
+  arrange(indicates, desc(stat))
+
+# View top indicators with traits
+indval_results %>%
+  select(FinalID, indicates, stat, p.value, Order, FFG, TolVal) %>%
+  head(20)
+```
+
+------------------------------------------------------------------------
+
+## Step 17: Plot Indicator Taxa on NMDS
+
+```{r indval-plot, fig.cap="NMDS ordination with top indicator taxa overlaid as asterisk symbols. Taxa labeled in italics are the strongest indicators of their gradient group based on IndVal.g (p < 0.05, 999 permutations)."}
+
+top_indicators <- indval_results %>%
+  group_by(indicates) %>%
+  slice_max(order_by = stat, n = 5) %>%
+  ungroup()
+
+species_scores_top <- as.data.frame(scores(nmds, display = "species")) %>%
+  tibble::rownames_to_column("FinalID") %>%
+  inner_join(top_indicators, by = "FinalID")
+
+cat("Indicator taxa with NMDS scores:", nrow(species_scores_top), "\n")
+
+indicator_colors <- c("Riffle" = "#513dd1", "Boatable" = "#E15759")
+
+nmds_indval <- nmds_plot_gradient +
+  geom_point(
+    data = species_scores_top,
+    aes(x = NMDS1, y = NMDS2, color = indicates),
+    shape = 8, size = 3, inherit.aes = FALSE
+  ) +
+  ggrepel::geom_text_repel(
+    data        = species_scores_top,
+    aes(x = NMDS1, y = NMDS2, label = FinalID, color = indicates),
+    size = 3.5, fontface = "italic",
+    box.padding = 0.5, point.padding = 0.3,
+    segment.color = "grey60", segment.size = 0.3,
+    max.overlaps = 20, inherit.aes = FALSE
+  ) +
+  scale_color_manual(values = indicator_colors, name = "Indicator group")
+
+nmds_indval
+```
+
+------------------------------------------------------------------------
+
+## Step 18: Save Outputs
+
+```{r save-outputs, eval=FALSE}
+dir.create("outputs", showWarnings = FALSE)
+
+ggsave("outputs/NMDS_gradient.png",
+       nmds_plot_gradient, width = 9, height = 6, dpi = 300)
+ggsave("outputs/NMDS_season.png",
+       nmds_plot_season, width = 9, height = 6, dpi = 300)
+ggsave("outputs/NMDS_gradient_x_season.png",
+       nmds_plot_combo, width = 10, height = 7, dpi = 300)
+ggsave("outputs/NMDS_indval.png",
+       nmds_indval, width = 11, height = 8, dpi = 300)
+
+capture.output(
+  list(
+    PERMANOVA_gradient  = perm_gradient,
+    PERMANOVA_season    = perm_season,
+    PERMANOVA_both      = perm_both,
+    PERMANOVA_interact  = perm_interact,
+    Dispersion_gradient = disp_gradient_test,
+    Dispersion_season   = disp_season_test
+  ),
+  file = "outputs/PERMANOVA_results.txt"
+)
+
+write.csv(indval_results, "outputs/indicator_species.csv", row.names = FALSE)
+
+cat("All outputs saved to /outputs/\n")
+```
+
+------------------------------------------------------------------------
+
+## Summary of Analyses
+
+| Step | Analysis | Function | Package |
+|----|----|----|----|
+| 6 | log(x+1) + Wisconsin transformation | `log1p()`, `wisconsin()` | base R, `vegan` |
+| 7 | Bray-Curtis dissimilarity matrix | `vegdist()` | `vegan` |
+| 8 | NMDS ordination | `metaMDS()` | `vegan` |
+| 13 | PERMANOVA — group centroid differences | `adonis2()` | `vegan` |
+| 14 | BETADISPER — homogeneity of dispersion | `betadisper()`, `permutest()` | `vegan` |
+| 15 | Indicator species analysis | `multipatt()` | `indicspecies` |
+| 16 | Trait annotation | join via `masterTaxaGenus.csv` | `dplyr` |
+
+------------------------------------------------------------------------
+
+## References
+
+Bray, J. R., & Curtis, J. T. (1957). An ordination of the upland forest communities of southern Wisconsin. *Ecological Monographs*, 27(4), 325–349.
+
+De Caceres, M., & Legendre, P. (2009). Associations between species and groups of sites: indices and statistical inference. *Ecology*, 90(12), 3566–3574.
+
+Dufrêne, M., & Legendre, P. (1997). Species assemblages and indicator species: the need for a flexible asymmetrical approach. *Ecological Monographs*, 67(3), 345–366.
+
+McCune, B., & Grace, J. B. (2002). *Analysis of Ecological Communities*. MjM Software, Gleneden Beach, Oregon.
+
+Oksanen, J., et al. (2022). vegan: Community Ecology Package. R package version 2.6-4. <https://CRAN.R-project.org/package=vegan>
+
+Wickham, H. (2016). *ggplot2: Elegant Graphics for Data Analysis*. Springer-Verlag New York.
